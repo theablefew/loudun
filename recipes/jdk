@@ -1,0 +1,2 @@
+su root && cd /root && mkdir -p setup
+

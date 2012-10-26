@@ -1,0 +1,132 @@
+#!/usr/bin/env ruby
+require 'rubygems'
+require 'optparse'
+require 'net/ssh'
+require 'net/ssh/multi'
+require 'yaml'
+require 'active_support/all'
+require 'rainbow'
+
+@options = {}
+optparse = OptionParser.new do|opts|
+ # Set a banner, displayed at the top
+ # of the help screen.
+ opts.banner = "Usage: loudun [options]" 
+
+ @options[:servers] = nil
+ opts.on( '-s', '--servers FILE', 'YAML config file path' ) do |file|
+   @options[:servers] = file
+ end
+
+ @options[:verbose] = :fatal
+ opts.on( '-v', '--verbose LEVEL', 'Level of verbosity') do |verbosity|
+   @options[:verbose] = verbosity.to_sym
+ end
+
+ @options[:recipe] = nil
+ opts.on( '-r', '--recipe FILE', 'Commands to run on host' ) do |file|
+   @options[:recipe] = file
+ end
+ # This displays the help screen, all programs are
+ # assumed to have this option.
+ opts.on( '-h', '--help', 'Display this screen' ) do
+   puts opts
+   exit
+ end
+end
+
+# Parse the command-line. Remember there are two forms
+# of the parse method. The 'parse' method simply parses
+# ARGV, while the 'parse!' method parses ARGV and removes
+# any options found there, as well as any parameters for
+# the options.
+optparse.parse!
+
+def load_server_config( config_file )
+  @servers = YAML::load_file config_file
+end
+
+def default_ssh_options( server )
+  server_options = server.symbolize_keys!
+  server_options.merge! :forward_agent => true, 
+                        :paranoid => false,
+                        :verbose => @options[:verbose]
+end
+
+def load_recipe
+  File.readlines(@options[:recipe])
+end
+
+def connect(server)
+  print "Connecting to #{server['host']} ".color :yellow
+  host = server.delete 'host'
+  user = server.delete  'user'
+  server_options = default_ssh_options server
+
+  begin 
+    Net::SSH.start( host, user, server_options ) do |ssh|
+     print "[Connected]\n".color :green
+     load_recipe do |line|
+       next if line.blank?
+       puts "#{host}: Executing #{line}".color :blue
+       result = ssh.exec!(line)
+       puts "#{result}\n" unless result.blank?
+     end
+    end
+  rescue Errno::ETIMEDOUT => e
+    print "[Connection timeout]\n".color :red
+  end
+end
+
+def root( server )
+  
+end
+
+def possess( servers )
+  Net::SSH::Multi.start do |session|
+    servers.each do |server|
+        host = server.delete 'host'
+        root = server.delete 'root_pass'
+        #user = server.delete 'user'
+        server_options = default_ssh_options server
+        session.use host, server_options
+    end
+    puts "Starting session".color :green
+
+    session.open_channel do |server_channel|
+      server_channel.request_pty do |pty, success|
+        load_recipe.each do |line|
+          d = server_channel.exec line
+          pty.on_data do |ch, data|
+            if data =~ /Password\:/
+              server_channel.send_data "giN0IkAD\n"
+            end
+            puts data
+          end
+          puts "e #{d}"
+          server_channel.exec 'exit'
+        end
+      end
+    end
+
+    #load_recipe.each do |line|
+      #next if line.blank?
+      #session.exec(line) do |ch, stream, data|
+          #print "[#{ch[:host]}]: Executing #{line}".color :blue
+          #puts  "#{data}\n" unless data.blank?
+      #end
+    #end
+    session.close
+  end
+end
+
+load_server_config @options[:servers] if @options[:servers]
+
+begin
+  possess @servers
+rescue Exception => e
+  puts e.message
+  puts e.backtrace.join("\n")
+end
+
+#@servers.each {|server| connect server }
